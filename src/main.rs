@@ -1,17 +1,39 @@
 use std::{
+    ffi::{OsStr, OsString},
     fmt::Display,
     fs::File,
     hash::Hash,
     io::{self, BufRead, BufReader, Read},
+    path::{Path, PathBuf},
 };
 
 use bumpalo::Bump;
+use clap::{crate_authors, crate_description, crate_version, Clap};
 use hashbrown::HashMap;
+use walkdir::WalkDir;
+
+#[derive(Clap, Clone, Debug)]
+#[clap(author = crate_authors!(), about = crate_description!(), version = crate_version!())]
+struct Opts {
+    /// the root of the "left" package tree
+    left: String,
+    /// the root of the "right" package tree
+    right: String,
+    /// file containing keys to ignore
+    #[clap(short, long)]
+    ignore: Option<String>,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct Key<'a> {
     section: &'a str,
     property: String,
+}
+
+impl Display for Key<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}.{}", self.section, self.property)
+    }
 }
 
 struct Difference<'a> {
@@ -20,36 +42,66 @@ struct Difference<'a> {
     right: String,
 }
 
-impl Display for Difference<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{}.{}\n  {}\n  {}",
-            self.key.section, self.key.property, self.left, self.right
-        )
-    }
-}
-
 fn main() -> io::Result<()> {
-    let mut store = Bump::new();
+    let opts = Opts::parse();
 
-    let left = "resource/engines.old.cfg";
-    let right = "resource/engines.new.cfg";
+    let tree = read_common_tree(&opts.left, &opts.right);
+    let store = Bump::new();
 
-    let differences = diff_paths(left, right, &mut store)?;
+    for (file, (left, right)) in tree {
+        let differences: Vec<_> = diff_paths(&left, &right, &store)?.collect();
 
-    for diff in differences {
-        println!("{}", diff);
+        if !differences.is_empty() {
+            println!("# {} ({})", file.to_string_lossy(), differences.len());
+            for difference in differences {
+                println!(
+                    "  {}\n    {}\n    {}",
+                    difference.key, difference.left, difference.right
+                );
+            }
+        }
     }
 
     Ok(())
 }
 
-fn diff_paths<'a>(
+fn read_common_tree(
     left: &str,
     right: &str,
-    store: &'a mut Bump,
-) -> io::Result<impl Iterator<Item = Difference<'a>>> {
+) -> impl Iterator<Item = (OsString, (PathBuf, PathBuf))> {
+    let left: HashMap<_, _> = read_tree(left)
+        .map(|x| (x.file_name().unwrap().to_owned(), x))
+        .collect();
+    let mut right: HashMap<_, _> = read_tree(right)
+        .map(|x| (x.file_name().unwrap().to_owned(), x))
+        .collect();
+
+    left.into_iter()
+        .filter_map(move |(file, left)| right.remove(&file).map(|right| (file, (left, right))))
+}
+
+fn read_tree(root: &str) -> impl Iterator<Item = PathBuf> {
+    let tgt_ext = OsStr::new("cfg");
+    let tgt_ext_cap = OsStr::new("CFG");
+
+    WalkDir::new(root).into_iter().filter_map(move |entry| {
+        entry
+            .ok()
+            .filter(|x| {
+                x.path()
+                    .extension()
+                    .map(|ext| ext == tgt_ext || ext == tgt_ext_cap)
+                    .unwrap_or_default()
+            })
+            .map(|x| x.into_path())
+    })
+}
+
+fn diff_paths(
+    left: impl AsRef<Path>,
+    right: impl AsRef<Path>,
+    store: &Bump,
+) -> io::Result<impl Iterator<Item = Difference>> {
     let left = File::open(left)?;
     let right = File::open(right)?;
     Ok(diff(left, right, store))
