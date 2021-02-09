@@ -1,7 +1,7 @@
 use std::{
     ffi::{OsStr, OsString},
     fmt::Display,
-    fs::File,
+    fs::{self, File},
     hash::Hash,
     io::{self, BufRead, BufReader, Read},
     path::{Path, PathBuf},
@@ -9,7 +9,7 @@ use std::{
 
 use bumpalo::Bump;
 use clap::{crate_authors, crate_description, crate_version, Clap};
-use hashbrown::HashMap;
+use hashbrown::{HashMap, HashSet};
 use walkdir::WalkDir;
 
 #[derive(Clap, Clone, Debug)]
@@ -42,14 +42,44 @@ struct Difference<'a> {
     right: String,
 }
 
+#[derive(Clone, Debug, Default)]
+struct Ignored {
+    set: HashSet<String>,
+}
+
+impl Ignored {
+    fn new() -> Self {
+        Default::default()
+    }
+
+    fn initialize(&mut self, config: &str) {
+        self.set.extend(config.lines().map(|x| x.to_string()));
+    }
+
+    fn is_ignored(&self, key: &Key) -> bool {
+        if self.set.is_empty() {
+            return false;
+        }
+
+        self.set.contains(key.section) || self.set.contains(&key.property)
+    }
+}
+
 fn main() -> io::Result<()> {
     let opts = Opts::parse();
+
+    let mut ignored = Ignored::new();
+    if let Some(path) = opts.ignore.as_ref() {
+        ignored.initialize(&fs::read_to_string(path)?);
+    }
 
     let tree = read_common_tree(&opts.left, &opts.right);
     let store = Bump::new();
 
     for (file, (left, right)) in tree {
-        let differences: Vec<_> = diff_paths(&left, &right, &store)?.collect();
+        let differences: Vec<_> = diff_paths(&left, &right, &store)?
+            .filter(|x| !ignored.is_ignored(&x.key))
+            .collect();
 
         if !differences.is_empty() {
             println!("# {} ({})", file.to_string_lossy(), differences.len());
