@@ -43,11 +43,11 @@ struct Difference<'a> {
 }
 
 #[derive(Clone, Debug, Default)]
-struct Ignored {
+struct KeyFilter {
     set: HashSet<String>,
 }
 
-impl Ignored {
+impl KeyFilter {
     fn new() -> Self {
         Default::default()
     }
@@ -56,7 +56,7 @@ impl Ignored {
         self.set.extend(config.lines().map(|x| x.to_string()));
     }
 
-    fn is_ignored(&self, key: &Key) -> bool {
+    fn is_filtered(&self, key: &Key) -> bool {
         if self.set.is_empty() {
             return false;
         }
@@ -68,7 +68,7 @@ impl Ignored {
 fn main() -> io::Result<()> {
     let opts = Opts::parse();
 
-    let mut ignored = Ignored::new();
+    let mut ignored = KeyFilter::new();
     if let Some(path) = opts.ignore.as_ref() {
         ignored.initialize(&fs::read_to_string(path)?);
     }
@@ -78,7 +78,7 @@ fn main() -> io::Result<()> {
 
     for (file, (left, right)) in tree {
         let differences: Vec<_> = diff_paths(&left, &right, &store)?
-            .filter(|x| !ignored.is_ignored(&x.key))
+            .filter(|x| !ignored.is_filtered(&x.key))
             .collect();
 
         if !differences.is_empty() {
